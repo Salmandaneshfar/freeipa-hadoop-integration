@@ -1,0 +1,224 @@
+name: Project Automation
+
+on:
+  issues:
+    types: [opened, reopened, closed, labeled, unlabeled]
+  pull_request:
+    types: [opened, reopened, closed, labeled, unlabeled]
+
+jobs:
+  project_automation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Manage Project Cards
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.issue ? context.payload.issue.number : context.payload.pull_request.number;
+            
+            // Helper function to get project ID
+            async function getProjectId(projectName) {
+              const projects = await github.rest.projects.listForRepo({
+                owner,
+                repo,
+                state: 'open'
+              });
+              
+              const project = projects.data.find(p => p.name === projectName);
+              return project ? project.id : null;
+            }
+            
+            // Helper function to get column ID from project
+            async function getColumnId(projectId, columnName) {
+              const columns = await github.rest.projects.listColumns({
+                project_id: projectId
+              });
+              
+              const column = columns.data.find(c => c.name === columnName);
+              return column ? column.id : null;
+            }
+            
+            // Main function to manage project cards
+            async function manageProjectCard() {
+              try {
+                // Get project ID (assuming "FreeIPA-Hadoop Integration" is the project name)
+                const projectId = await getProjectId("FreeIPA-Hadoop Integration");
+                if (!projectId) {
+                  console.log("Project not found");
+                  return;
+                }
+                
+                // Determine target column based on issue state and labels
+                let targetColumnName = "To Do"; // Default column
+                
+                const issueOrPR = context.payload.issue || context.payload.pull_request;
+                
+                if (issueOrPR.state === 'closed') {
+                  targetColumnName = "Done";
+                } else if (issueOrPR.labels.some(label => label.name === 'status: blocked')) {
+                  targetColumnName = "On Hold";
+                } else if (issueOrPR.assignees && issueOrPR.assignees.length > 0) {
+                  targetColumnName = "In Progress";
+                }
+                
+                // Get column ID
+                const columnId = await getColumnId(projectId, targetColumnName);
+                if (!columnId) {
+                  console.log(`Column "${targetColumnName}" not found`);
+                  return;
+                }
+                
+                // Check if card already exists for this issue
+                const cards = await github.rest.projects.listCards({
+                  column_id: columnId
+                });
+                
+                const existingCard = cards.data.find(card => {
+                  const contentUrl = card.content_url;
+                  return contentUrl && contentUrl.endsWith(`/${issue_number}`);
+                });
+                
+                if (existingCard) {
+                  // Move existing card to the target column
+                  await github.rest.projects.moveCard({
+                    card_id: existingCard.id,
+                    position: "top",
+                    column_id: columnId
+                  });
+                  console.log(`Moved existing card to "${targetColumnName}"`);
+                } else {
+                  // Create new card in the target column
+                  await github.rest.projects.createCard({
+                    column_id: columnId,
+                    content_id: issueOrPR.id,
+                    content_type: context.payload.issue ? 'Issue' : 'PullRequest'
+                  });
+                  console.log(`Created new card in "${targetColumnName}"`);
+                }
+              } catch (error) {
+                console.error(`Error: ${error.message}`);
+              }
+            }
+            
+            // Execute the main function
+            manageProjectCard();
+
+  issue_labeler:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply Labels Based on Content
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            
+            // Only process newly opened issues
+            if (context.payload.action !== 'opened' || !context.payload.issue) {
+              return;
+            }
+            
+            const issue = context.payload.issue;
+            const issueBody = issue.body || '';
+            const issueTitle = issue.title || '';
+            
+            // Define label patterns to check
+            const labelPatterns = [
+              { label: 'service: freeipa', patterns: ['freeipa', 'ipa', 'identity management'] },
+              { label: 'service: hdfs', patterns: ['hdfs', 'filesystem', 'namenode', 'datanode'] },
+              { label: 'service: yarn', patterns: ['yarn', 'resource manager', 'node manager'] },
+              { label: 'service: ambari', patterns: ['ambari', 'management console'] },
+              { label: 'service: ranger', patterns: ['ranger', 'policy', 'authorization'] },
+              { label: 'service: hue', patterns: ['hue', 'ui', 'interface'] },
+              { label: 'service: impala', patterns: ['impala', 'query', 'sql'] },
+              { label: 'type: authentication', patterns: ['kerberos', 'auth', 'authentication', 'login'] },
+              { label: 'type: authorization', patterns: ['authorization', 'permission', 'access control'] },
+              { label: 'type: documentation', patterns: ['doc', 'documentation', 'readme', 'guide'] },
+              { label: 'type: infrastructure', patterns: ['setup', 'infrastructure', 'install', 'deploy'] }
+            ];
+            
+            // Check for matches and collect labels to apply
+            const labelsToApply = [];
+            
+            for (const { label, patterns } of labelPatterns) {
+              const combinedText = `${issueTitle.toLowerCase()} ${issueBody.toLowerCase()}`;
+              if (patterns.some(pattern => combinedText.includes(pattern.toLowerCase()))) {
+                labelsToApply.push(label);
+              }
+            }
+            
+            // Apply labels if any were matched
+            if (labelsToApply.length > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issue.number,
+                labels: labelsToApply
+              });
+              
+              console.log(`Applied labels: ${labelsToApply.join(', ')}`);
+            }
+
+  weekly_report:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * 0'
+    steps:
+      - name: Generate Weekly Report
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            
+            // Get one week ago date
+            const oneWeekAgo = new Date();
+            oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+            const oneWeekAgoString = oneWeekAgo.toISOString();
+            
+            // Get issues updated in the last week
+            const issues = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: 'all',
+              since: oneWeekAgoString
+            });
+            
+            // Prepare report content
+            let reportContent = '# Weekly Project Status Report\n\n';
+            reportContent += `## Week of ${oneWeekAgo.toDateString()} - ${new Date().toDateString()}\n\n`;
+            
+            // Categorize issues
+            const closed = issues.data.filter(i => i.state === 'closed' && !i.pull_request);
+            const opened = issues.data.filter(i => i.state === 'open' && !i.pull_request && new Date(i.created_at) >= oneWeekAgo);
+            const updated = issues.data.filter(i => i.state === 'open' && !i.pull_request && new Date(i.created_at) < oneWeekAgo);
+            
+            // Add closed issues
+            reportContent += `### Completed Tasks (${closed.length})\n\n`;
+            closed.forEach(issue => {
+              reportContent += `- #${issue.number}: ${issue.title}\n`;
+            });
+            
+            // Add new issues
+            reportContent += `\n### New Tasks (${opened.length})\n\n`;
+            opened.forEach(issue => {
+              reportContent += `- #${issue.number}: ${issue.title}\n`;
+            });
+            
+            // Add updated issues
+            reportContent += `\n### In Progress Tasks (${updated.length})\n\n`;
+            updated.forEach(issue => {
+              reportContent += `- #${issue.number}: ${issue.title}\n`;
+            });
+            
+            // Create a new issue with the report
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title: `Weekly Status Report: ${new Date().toDateString()}`,
+              body: reportContent,
+              labels: ['type: documentation', 'status: report']
+            });
+            
+            console.log('Created weekly status report'); 
