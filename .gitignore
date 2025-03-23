@@ -1,0 +1,40 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.log
+*.tmp
+tmp/
+
+# Python virtual environments
+venv/
+env/
+.venv/
+.env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build artifacts
+dist/
+build/
+*.zip
+*.tar.gz 
